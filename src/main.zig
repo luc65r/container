@@ -1,7 +1,9 @@
 const std = @import("std");
 const log = std.log;
 const os = std.os;
-const CLONE = os.linux.CLONE;
+const linux = os.linux;
+const assert = std.debug.assert;
+const CLONE = linux.CLONE;
 const sys = @import("sys.zig");
 
 pub fn main() !void {
@@ -28,8 +30,13 @@ pub fn main() !void {
 
     os.close(inpipe[1]);
 
-    while ((try sys.splice(outpipe[0], null, 1, null, std.math.maxInt(u32), 0)) != 0) {}
+    while ((try sys.splice(outpipe[0], null, 1, null, std.math.maxInt(u32), os.STDOUT_FILENO)) != 0) {}
     os.close(outpipe[0]);
+
+    const rc = try sys.wait4(child_pid, 0);
+    assert(rc.pid == child_pid);
+    assert(linux.W.IFEXITED(rc.status) and linux.W.EXITSTATUS(rc.status) == 0);
+    log.info("{}", .{rc});
 }
 
 test {

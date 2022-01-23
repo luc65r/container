@@ -6,6 +6,7 @@ const errno = linux.getErrno;
 const pid_t = linux.pid_t;
 const fd_t = linux.fd_t;
 const off_t = linux.off_t;
+const rusage = linux.rusage;
 const UnexpectedError = os.UnexpectedError;
 const unexpectedErrno = os.unexpectedErrno;
 
@@ -77,5 +78,36 @@ pub fn splice(
         .NOMEM => return error.SystemResources,
         .SPIPE => unreachable,
         else => |err| return unexpectedErrno(err),
+    }
+}
+
+pub const Wait4Error = error{
+    WouldBlock,
+} || UnexpectedError;
+
+pub const Wait4Result = struct {
+    pid: pid_t,
+    status: u32,
+    rusage: rusage,
+};
+
+pub fn wait4(pid: pid_t, flags: u32) Wait4Error!Wait4Result {
+    var status: u32 = undefined;
+    var usage: rusage = undefined;
+    while (true) {
+        const rc = linux.syscall4(.wait4, @bitCast(usize, @as(isize, pid)), @ptrToInt(&status), flags, @ptrToInt(&usage));
+        switch (errno(rc)) {
+            .SUCCESS => return Wait4Result{
+                .pid = @intCast(pid_t, rc),
+                .status = status,
+                .rusage = usage,
+            },
+            .INTR => continue,
+            .AGAIN => return error.WouldBlock,
+            .CHILD => unreachable,
+            .FAULT => unreachable,
+            .INVAL => unreachable,
+            else => |err| return unexpectedErrno(err),
+        }
     }
 }
