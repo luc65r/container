@@ -111,3 +111,29 @@ pub fn wait4(pid: pid_t, flags: u32) Wait4Error!Wait4Result {
         }
     }
 }
+
+pub const ChrootError = error{
+    AccessDenied,
+    InputOutput,
+    SymLinkLoop,
+    SystemResources,
+    NameTooLong,
+    FileNotFound,
+} || UnexpectedError;
+
+pub fn chroot(path: [*:0]const u8) ChrootError!void {
+    const rc = linux.chroot(path);
+    switch (errno(rc)) {
+        .SUCCESS => return,
+        .ACCES => return error.AccessDenied,
+        .FAULT => unreachable,
+        .IO => return error.InputOutput,
+        .LOOP => return error.SymLinkLoop,
+        .NAMETOOLONG => return error.NameTooLong,
+        .NOENT => return error.FileNotFound,
+        .NOMEM => return error.SystemResources,
+        .NOTDIR => return error.FileNotFound,
+        .PERM => return error.AccessDenied,
+        else => |err| return unexpectedErrno(err),
+    }
+}
