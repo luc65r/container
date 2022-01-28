@@ -8,9 +8,9 @@ const EPOLL = std.os.linux.EPOLL;
 
 pub fn Container(comptime Stdin: type, comptime Stdout: type, comptime Stderr: type) type {
     return struct {
-        exe: [*:0]const u8,
-        argv: [*:null]const ?[*:0]const u8,
-        argp: [*:null]const ?[*:0]const u8,
+        allocator: std.mem.Allocator,
+        argv: []const []const u8,
+        argp: []const []const u8,
         bind_mounts: []const struct {
             target: []const u8, // relative path from `dir`
             source: ?[]const u8, // absolute path
@@ -94,7 +94,9 @@ pub fn Container(comptime Stdin: type, comptime Stdout: type, comptime Stderr: t
                     std.os.close(errpipe[1]);
                 }
                 {
-                    return std.os.execvpeZ(self.exe, self.argv, self.argp);
+                    const argv = try toCStringArray(self.allocator, self.argv);
+                    const argp = try toCStringArray(self.allocator, self.argp);
+                    return std.os.execvpeZ(argv[0].?, argv, argp);
                 }
             }
 
@@ -195,4 +197,13 @@ pub fn Container(comptime Stdin: type, comptime Stdout: type, comptime Stderr: t
 
 fn timevalToSec(tv: std.os.timeval) f64 {
     return @intToFloat(f64, tv.tv_sec) + @intToFloat(f64, tv.tv_usec) / 1_000_000;
+}
+
+fn toCStringArray(allocator: std.mem.Allocator, slice: []const []const u8) ![*:null]?[*:0]u8 {
+    const csa = try allocator.allocSentinel(?[*:0]u8, slice.len, null);
+    for (slice) |s, i| {
+        csa[i] = try allocator.allocSentinel(u8, s.len, 0);
+        std.mem.copy(u8, csa[i].?[0..s.len], s);
+    }
+    return csa;
 }
