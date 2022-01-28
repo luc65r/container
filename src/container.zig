@@ -178,6 +178,7 @@ pub fn Container(comptime Stdin: type, comptime Stdout: type, comptime Stderr: t
                     }
                 }
             }
+            std.os.close(epollfd);
 
             const rc = try sys.wait4(child_pid, 0);
             std.debug.assert(rc.pid == child_pid);
