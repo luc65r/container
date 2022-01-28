@@ -12,6 +12,10 @@ pub fn build(b: *std.build.Builder) void {
     const mode = b.standardReleaseOptions();
 
     const exe = b.addExecutable("container", "src/main.zig");
+    exe.addPackage(.{
+        .name = "clap",
+        .path = .{ .path = "vendor/zig-clap/clap.zig" },
+    });
     exe.setTarget(target);
     exe.setBuildMode(mode);
     exe.install();

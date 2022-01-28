@@ -1,18 +1,46 @@
 const std = @import("std");
+const clap = @import("clap");
 const Container = @import("container.zig").Container;
 
+const stdout = std.io.getStdOut().writer();
+const stderr = std.io.getStdErr().writer();
+
 pub fn main() !void {
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+
+    const allocator = arena.allocator();
+
+    const params = comptime [_]clap.Param(clap.Help){
+        clap.parseParam("-h, --help  Display this help and exit") catch unreachable,
+        clap.parseParam("<COMMAND>...") catch unreachable,
+    };
+
+    var iter = try clap.args.OsIterator.init(allocator);
+    defer iter.deinit();
+
+    var diag = clap.Diagnostic{};
+    var args = clap.parseEx(clap.Help, &params, &iter, .{
+        .allocator = allocator,
+        .diagnostic = &diag,
+    }) catch |err| {
+        diag.report(stderr, err) catch {};
+        return err;
+    };
+    defer args.deinit();
+
+    if (args.flag("--help"))
+        return clap.help(stdout, &params);
+
     var tmpdir = try TmpDir("container").create();
     defer tmpdir.cleanup();
 
-    const stdin = std.io.fixedBufferStream("this is a test\n").reader();
-    const stdout = std.io.getStdOut().writer();
-    const stderr = std.io.getStdErr().writer();
+    const in = std.io.fixedBufferStream("this is a test\n").reader();
 
-    const c = Container(@TypeOf(stdin), @TypeOf(stdout), @TypeOf(stderr)){
-        .exe = std.os.argv[1],
-        .argv = @ptrCast([*:null]?[*:0]u8, &std.os.argv[1]),
-        .argp = &[_:null]?[*:0]u8{},
+    const c = Container(@TypeOf(in), @TypeOf(stdout), @TypeOf(stderr)){
+        .allocator = allocator,
+        .argv = args.positionals(),
+        .argp = &.{},
         .bind_mounts = &.{
             .{
                 .target = "nix/store",
@@ -29,7 +57,7 @@ pub fn main() !void {
         },
         .dir = tmpdir.dir,
         .cwd = "/",
-        .stdin = stdin,
+        .stdin = in,
         .stdout = stdout,
         .stderr = stderr,
     };
