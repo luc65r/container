@@ -10,8 +10,8 @@ pub fn main() !void {
     const stderr = std.io.getStdErr().writer();
 
     const c = Container(@TypeOf(stdin), @TypeOf(stdout), @TypeOf(stderr)){
-        .exe = "cat",
-        .argv = &[_:null]?[*:0]u8{"cat"},
+        .exe = std.os.argv[1],
+        .argv = @ptrCast([*:null]?[*:0]u8, &std.os.argv[1]),
         .argp = &[_:null]?[*:0]u8{},
         .bind_mounts = &.{
             .{
