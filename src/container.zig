@@ -160,7 +160,7 @@ pub fn Container(comptime Stdin: type, comptime Stdout: type, comptime Stderr: t
                         } else if (event.data.fd == errpipe[0]) {
                             std.log.debug("reading from stderr", .{});
                             const r = try std.os.read(event.data.fd, &buf);
-                            std.log.debug("writing {} bytes for stdout", .{r});
+                            std.log.debug("writing {} bytes for stderr", .{r});
                             const w = try self.stderr.write(buf[0..r]);
                             std.debug.assert(w == r);
                         } else {
