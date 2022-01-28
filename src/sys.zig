@@ -83,6 +83,7 @@ pub fn splice(
 
 pub const Wait4Error = error{
     WouldBlock,
+    NoChild,
 } || UnexpectedError;
 
 pub const Wait4Result = struct {
@@ -104,7 +105,7 @@ pub fn wait4(pid: pid_t, flags: u32) Wait4Error!Wait4Result {
             },
             .INTR => continue,
             .AGAIN => return error.WouldBlock,
-            .CHILD => unreachable,
+            .CHILD => return error.NoChild,
             .FAULT => unreachable,
             .INVAL => unreachable,
             else => |err| return unexpectedErrno(err),
@@ -112,28 +113,81 @@ pub fn wait4(pid: pid_t, flags: u32) Wait4Error!Wait4Result {
     }
 }
 
-pub const ChrootError = error{
+pub const MountError = error{
     AccessDenied,
-    InputOutput,
-    SymLinkLoop,
+    FileBusy,
+    MountLoop,
     SystemResources,
     NameTooLong,
+    NoDevice,
     FileNotFound,
+    NotBlock,
+    NotDir,
+    PermissionDenied,
+    ReadOnly,
 } || UnexpectedError;
 
-pub fn chroot(path: [*:0]const u8) ChrootError!void {
-    const rc = linux.chroot(path);
+pub fn mount(source: ?[*:0]const u8, target: ?[*:0]const u8, fstype: ?[*:0]const u8, flags: u32, data: ?*anyopaque) MountError!void {
+    const rc = linux.syscall5(.mount, @ptrToInt(source), @ptrToInt(target), @ptrToInt(fstype), flags, @ptrToInt(data));
     switch (errno(rc)) {
         .SUCCESS => return,
         .ACCES => return error.AccessDenied,
+        .BUSY => return error.FileBusy,
         .FAULT => unreachable,
-        .IO => return error.InputOutput,
-        .LOOP => return error.SymLinkLoop,
+        .INVAL => unreachable,
+        .LOOP => return error.MountLoop,
+        .MFILE => return error.SystemResources,
+        .NAMETOOLONG => return error.NameTooLong,
+        .NODEV => return error.NoDevice,
+        .NOENT => return error.FileNotFound,
+        .NOMEM => return error.SystemResources,
+        .NOTBLK => return error.NotBlock,
+        .NOTDIR => return error.NotDir,
+        .NXIO => unreachable,
+        .PERM => return error.PermissionDenied,
+        .ROFS => return error.ReadOnly,
+        else => |err| return unexpectedErrno(err),
+    }
+}
+
+const UmountError = error{
+    Marked,
+    FileBusy,
+    NameTooLong,
+    FileNotFound,
+    SystemResources,
+    PermissionDenied,
+} || UnexpectedError;
+
+pub fn umount2(target: ?[*:0]const u8, flags: u32) UmountError!void {
+    const rc = linux.syscall2(.umount2, @ptrToInt(target), flags);
+    switch (errno(rc)) {
+        .SUCCESS => return,
+        .AGAIN => return error.Marked,
+        .BUSY => return error.FileBusy,
+        .INVAL => unreachable,
         .NAMETOOLONG => return error.NameTooLong,
         .NOENT => return error.FileNotFound,
         .NOMEM => return error.SystemResources,
-        .NOTDIR => return error.FileNotFound,
-        .PERM => return error.AccessDenied,
+        .PERM => return error.PermissionDenied,
+        else => |err| return unexpectedErrno(err),
+    }
+}
+
+pub const PivotRootError = error{
+    DeviceBusy,
+    NotDir,
+    PermissionDenied,
+} || UnexpectedError;
+
+pub fn pivot_root(new_root: [*:0]const u8, put_old: [*:0]const u8) PivotRootError!void {
+    const rc = linux.syscall2(.pivot_root, @ptrToInt(new_root), @ptrToInt(put_old));
+    switch (errno(rc)) {
+        .SUCCESS => return,
+        .BUSY => return error.DeviceBusy,
+        .INVAL => unreachable,
+        .NOTDIR => return error.NotDir,
+        .PERM => return error.PermissionDenied,
         else => |err| return unexpectedErrno(err),
     }
 }
