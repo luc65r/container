@@ -11,36 +11,36 @@ pub fn IOStreams(comptime Stdin: type, comptime Stdout: type, comptime Stderr: t
         stdin: Stdin,
         stdout: Stdout,
         stderr: Stderr,
-        pipes: [3][2]std.os.fd_t = undefined,
+        pipes: [3]Pipe = undefined,
 
         const Self = @This();
 
         pub fn initPipes(self: *Self) !void {
-            for (self.pipes) |*pipe| {
-                pipe.* = try std.os.pipe();
+            for (self.pipes) |*pipe, i| {
+                pipe.* = try Pipe.init(if (i == 0) .read else .write);
             }
         }
 
-        pub fn setPipesAsStdio(self: Self) !void {
-            for (self.pipes) |p, i| {
-                std.os.close(p[side(.parent, i)]);
-                try std.os.dup2(p[side(.child, i)], @intCast(i32, i));
-                std.os.close(p[side(.child, i)]);
+        pub fn setPipesAsStdio(self: *Self) !void {
+            for (self.pipes) |*p, i| {
+                p.close(.parent);
+                try std.os.dup2(p.get(.child), @intCast(i32, i));
+                p.close(.child);
             }
         }
 
-        pub fn readPipes(self: Self) !void {
-            for (self.pipes) |p, i| {
-                std.os.close(p[side(.child, i)]);
+        pub fn readPipes(self: *Self) !void {
+            for (self.pipes) |*p| {
+                p.close(.child);
             }
 
             const epollfd = try std.os.epoll_create1(0);
             const epoll_event = std.os.linux.epoll_event;
             for (self.pipes) |p, i| {
-                try std.os.epoll_ctl(epollfd, EPOLL.CTL_ADD, p[side(.parent, i)], &epoll_event{
+                try std.os.epoll_ctl(epollfd, EPOLL.CTL_ADD, p.get(.parent), &epoll_event{
                     .events = if (i == 0) EPOLL.OUT else EPOLL.IN,
                     .data = .{
-                        .fd = p[side(.parent, i)],
+                        .fd = p.get(.parent),
                     },
                 });
             }
@@ -48,52 +48,44 @@ pub fn IOStreams(comptime Stdin: type, comptime Stdout: type, comptime Stderr: t
             var open_fds: u32 = 3;
             while (open_fds > 0) {
                 var events: [3]std.os.linux.epoll_event = undefined;
-                std.log.debug("waiting for events", .{});
                 const nfds = std.os.epoll_wait(epollfd, &events, -1);
                 std.log.debug("got {} events", .{nfds});
                 for (events[0..nfds]) |event| {
+                    const p: *Pipe = brk: {
+                        for (self.pipes) |*p| {
+                            if (p.get(.parent) == event.data.fd)
+                                break :brk p;
+                        }
+                        unreachable;
+                    };
+
                     if (event.events & (EPOLL.IN | EPOLL.OUT) != 0) {
-                        if (event.events & EPOLL.IN != 0)
-                            std.log.debug("got pollin", .{});
-                        if (event.events & EPOLL.OUT != 0)
-                            std.log.debug("got pollout", .{});
                         var buf: [1024]u8 = undefined;
-                        if (event.data.fd == self.pipes[0][1]) {
-                            std.log.debug("reading for stdin", .{});
-                            const r = try self.stdin.read(&buf);
-                            if (r == 0) {
-                                std.log.debug("finished reading for stdin", .{});
-                                try std.os.epoll_ctl(epollfd, EPOLL.CTL_DEL, event.data.fd, null);
-                                std.os.close(event.data.fd);
-                                open_fds -= 1;
-                            } else {
-                                std.log.debug("writing {} bytes to stdin", .{r});
-                                const w = try std.os.write(event.data.fd, buf[0..r]);
+                        switch (p.mode) {
+                            .read => {
+                                const r = try self.stdin.read(&buf);
+                                if (r == 0) {
+                                    std.log.debug("closing stdin", .{});
+                                    try std.os.epoll_ctl(epollfd, EPOLL.CTL_DEL, event.data.fd, null);
+                                    p.close(.parent);
+                                    open_fds -= 1;
+                                } else {
+                                    std.log.debug("writing {} bytes to stdin", .{r});
+                                    const w = try std.os.write(event.data.fd, buf[0..r]);
+                                    std.debug.assert(w == r);
+                                }
+                            },
+                            .write => {
+                                const r = try std.os.read(event.data.fd, &buf);
+                                std.log.debug("read {} bytes for stdout", .{r});
+                                const w = try self.stdout.write(buf[0..r]);
                                 std.debug.assert(w == r);
-                            }
-                        } else if (event.data.fd == self.pipes[1][0]) {
-                            std.log.debug("reading from stdout", .{});
-                            const r = try std.os.read(event.data.fd, &buf);
-                            std.log.debug("writing {} bytes for stdout", .{r});
-                            const w = try self.stdout.write(buf[0..r]);
-                            std.debug.assert(w == r);
-                        } else if (event.data.fd == self.pipes[2][0]) {
-                            std.log.debug("reading from stderr", .{});
-                            const r = try std.os.read(event.data.fd, &buf);
-                            std.log.debug("writing {} bytes for stderr", .{r});
-                            const w = try self.stderr.write(buf[0..r]);
-                            std.debug.assert(w == r);
-                        } else {
-                            unreachable;
+                            },
                         }
                     }
                     if (event.events & (EPOLL.ERR | EPOLL.HUP) != 0) {
-                        if (event.events & EPOLL.ERR != 0)
-                            std.log.debug("got pollerr", .{});
-                        if (event.events & EPOLL.HUP != 0)
-                            std.log.debug("got pollhup", .{});
                         try std.os.epoll_ctl(epollfd, EPOLL.CTL_DEL, event.data.fd, null);
-                        std.os.close(event.data.fd);
+                        p.close(.parent);
                         open_fds -= 1;
                     }
                 }
@@ -101,17 +93,47 @@ pub fn IOStreams(comptime Stdin: type, comptime Stdout: type, comptime Stderr: t
             std.os.close(epollfd);
         }
 
-        const Side = enum {
-            parent,
-            child,
-        };
+        const Pipe = struct {
+            read: std.os.fd_t,
+            write: std.os.fd_t,
+            mode: Mode,
 
-        fn side(s: Side, i: usize) u1 {
-            switch (s) {
-                .parent => return if (i == 0) 1 else 0,
-                .child => return if (i == 0) 0 else 1,
+            const Mode = enum(u1) {
+                read,
+                write,
+            };
+
+            const Side = enum(u1) {
+                parent,
+                child,
+            };
+
+            pub fn init(mode: Mode) !Pipe {
+                const pipe = try std.os.pipe();
+                return Pipe{
+                    .read = pipe[0],
+                    .write = pipe[1],
+                    .mode = mode,
+                };
             }
-        }
+
+            pub fn get(self: Pipe, side: Side) std.os.fd_t {
+                return if (side == .parent and self.mode == .read or side == .child and self.mode == .write)
+                    self.write
+                else
+                    self.read;
+            }
+
+            pub fn close(self: *Pipe, side: Side) void {
+                if (side == .parent and self.mode == .read or side == .child and self.mode == .write) {
+                    std.os.close(self.write);
+                    self.write = undefined;
+                } else {
+                    std.os.close(self.read);
+                    self.read = undefined;
+                }
+            }
+        };
     };
 }
 
