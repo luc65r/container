@@ -62,14 +62,7 @@ pub const SpliceError = error{
     SystemResources,
 } || UnexpectedError;
 
-pub fn splice(
-    fd_in: fd_t,
-    off_in: ?*off_t,
-    fd_out: fd_t,
-    off_out: ?*off_t,
-    len: usize,
-    flags: u32,
-) SpliceError!usize {
+pub fn splice(fd_in: fd_t, off_in: ?*off_t, fd_out: fd_t, off_out: ?*off_t, len: usize, flags: u32) SpliceError!usize {
     const rc = linux.syscall6(.splice, @bitCast(usize, @as(isize, fd_in)), @ptrToInt(off_in), @bitCast(usize, @as(isize, fd_out)), @ptrToInt(off_out), len, flags);
     switch (errno(rc)) {
         .SUCCESS => return rc,
