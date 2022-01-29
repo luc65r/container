@@ -1,6 +1,6 @@
 const std = @import("std");
 const clap = @import("clap");
-const Container = @import("container.zig").Container;
+const container = @import("container.zig");
 
 const stdout = std.io.getStdOut().writer();
 const stderr = std.io.getStdErr().writer();
@@ -37,7 +37,8 @@ pub fn main() !void {
 
     const in = std.io.fixedBufferStream("this is a test\n").reader();
 
-    const c = Container(@TypeOf(in), @TypeOf(stdout), @TypeOf(stderr)){
+    const streams = container.ioStreams(in, stdout, stderr);
+    const c = container.Container(@TypeOf(streams)){
         .allocator = allocator,
         .argv = args.positionals(),
         .argp = &.{},
@@ -57,9 +58,7 @@ pub fn main() !void {
         },
         .dir = tmpdir.dir,
         .cwd = "/",
-        .stdin = in,
-        .stdout = stdout,
-        .stderr = stderr,
+        .streams = streams,
     };
 
     const res = try c.run();

@@ -6,7 +6,120 @@ const MS = std.os.linux.MS;
 const MNT = std.os.linux.MNT;
 const EPOLL = std.os.linux.EPOLL;
 
-pub fn Container(comptime Stdin: type, comptime Stdout: type, comptime Stderr: type) type {
+pub fn IOStreams(comptime Stdin: type, comptime Stdout: type, comptime Stderr: type) type {
+    return struct {
+        stdin: Stdin,
+        stdout: Stdout,
+        stderr: Stderr,
+        pipes: [3][2]std.os.fd_t = undefined,
+
+        const Self = @This();
+
+        pub fn initPipes(self: *Self) !void {
+            for (self.pipes) |*pipe| {
+                pipe.* = try std.os.pipe();
+            }
+        }
+
+        pub fn setPipesAsStdio(self: Self) !void {
+            for (self.pipes) |p, i| {
+                std.os.close(p[side(.parent, i)]);
+                try std.os.dup2(p[side(.child, i)], @intCast(i32, i));
+                std.os.close(p[side(.child, i)]);
+            }
+        }
+
+        pub fn readPipes(self: Self) !void {
+            for (self.pipes) |p, i| {
+                std.os.close(p[side(.child, i)]);
+            }
+
+            const epollfd = try std.os.epoll_create1(0);
+            const epoll_event = std.os.linux.epoll_event;
+            for (self.pipes) |p, i| {
+                try std.os.epoll_ctl(epollfd, EPOLL.CTL_ADD, p[side(.parent, i)], &epoll_event{
+                    .events = if (i == 0) EPOLL.OUT else EPOLL.IN,
+                    .data = .{
+                        .fd = p[side(.parent, i)],
+                    },
+                });
+            }
+
+            var open_fds: u32 = 3;
+            while (open_fds > 0) {
+                var events: [3]std.os.linux.epoll_event = undefined;
+                std.log.debug("waiting for events", .{});
+                const nfds = std.os.epoll_wait(epollfd, &events, -1);
+                std.log.debug("got {} events", .{nfds});
+                for (events[0..nfds]) |event| {
+                    if (event.events & (EPOLL.IN | EPOLL.OUT) != 0) {
+                        if (event.events & EPOLL.IN != 0)
+                            std.log.debug("got pollin", .{});
+                        if (event.events & EPOLL.OUT != 0)
+                            std.log.debug("got pollout", .{});
+                        var buf: [1024]u8 = undefined;
+                        if (event.data.fd == self.pipes[0][1]) {
+                            std.log.debug("reading for stdin", .{});
+                            const r = try self.stdin.read(&buf);
+                            if (r == 0) {
+                                std.log.debug("finished reading for stdin", .{});
+                                try std.os.epoll_ctl(epollfd, EPOLL.CTL_DEL, event.data.fd, null);
+                                std.os.close(event.data.fd);
+                                open_fds -= 1;
+                            } else {
+                                std.log.debug("writing {} bytes to stdin", .{r});
+                                const w = try std.os.write(event.data.fd, buf[0..r]);
+                                std.debug.assert(w == r);
+                            }
+                        } else if (event.data.fd == self.pipes[1][0]) {
+                            std.log.debug("reading from stdout", .{});
+                            const r = try std.os.read(event.data.fd, &buf);
+                            std.log.debug("writing {} bytes for stdout", .{r});
+                            const w = try self.stdout.write(buf[0..r]);
+                            std.debug.assert(w == r);
+                        } else if (event.data.fd == self.pipes[2][0]) {
+                            std.log.debug("reading from stderr", .{});
+                            const r = try std.os.read(event.data.fd, &buf);
+                            std.log.debug("writing {} bytes for stderr", .{r});
+                            const w = try self.stderr.write(buf[0..r]);
+                            std.debug.assert(w == r);
+                        } else {
+                            unreachable;
+                        }
+                    }
+                    if (event.events & (EPOLL.ERR | EPOLL.HUP) != 0) {
+                        if (event.events & EPOLL.ERR != 0)
+                            std.log.debug("got pollerr", .{});
+                        if (event.events & EPOLL.HUP != 0)
+                            std.log.debug("got pollhup", .{});
+                        try std.os.epoll_ctl(epollfd, EPOLL.CTL_DEL, event.data.fd, null);
+                        std.os.close(event.data.fd);
+                        open_fds -= 1;
+                    }
+                }
+            }
+            std.os.close(epollfd);
+        }
+
+        const Side = enum {
+            parent,
+            child,
+        };
+
+        fn side(s: Side, i: usize) u1 {
+            switch (s) {
+                .parent => return if (i == 0) 1 else 0,
+                .child => return if (i == 0) 0 else 1,
+            }
+        }
+    };
+}
+
+pub fn ioStreams(stdin: anytype, stdout: anytype, stderr: anytype) IOStreams(@TypeOf(stdin), @TypeOf(stdout), @TypeOf(stderr)) {
+    return .{ .stdin = stdin, .stdout = stdout, .stderr = stderr };
+}
+
+pub fn Container(comptime IOStreamsType: type) type {
     return struct {
         allocator: std.mem.Allocator,
         argv: []const []const u8,
@@ -17,9 +130,7 @@ pub fn Container(comptime Stdin: type, comptime Stdout: type, comptime Stderr: t
         },
         dir: std.fs.Dir,
         cwd: []const u8,
-        stdin: Stdin,
-        stdout: Stdout,
-        stderr: Stderr,
+        streams: IOStreamsType,
 
         const Self = @This();
 
@@ -29,11 +140,11 @@ pub fn Container(comptime Stdin: type, comptime Stdout: type, comptime Stderr: t
             system_time: f64,
         };
 
-        pub fn run(self: Self) !Result {
+        pub fn run(_self: Self) !Result {
+            var self = _self;
+
             std.log.info("creating pipes", .{});
-            const inpipe = try std.os.pipe();
-            const outpipe = try std.os.pipe();
-            const errpipe = try std.os.pipe();
+            try self.streams.initPipes();
 
             {
                 std.log.info("making mount paths", .{});
@@ -83,15 +194,7 @@ pub fn Container(comptime Stdin: type, comptime Stdout: type, comptime Stderr: t
                 }
                 {
                     std.log.info("duplicating pipes", .{});
-                    std.os.close(inpipe[1]);
-                    std.os.close(outpipe[0]);
-                    std.os.close(errpipe[0]);
-                    try std.os.dup2(inpipe[0], std.os.STDIN_FILENO);
-                    try std.os.dup2(outpipe[1], std.os.STDOUT_FILENO);
-                    try std.os.dup2(errpipe[1], std.os.STDERR_FILENO);
-                    std.os.close(inpipe[0]);
-                    std.os.close(outpipe[1]);
-                    std.os.close(errpipe[1]);
+                    try self.streams.setPipesAsStdio();
                 }
                 {
                     const argv = try toCStringArray(self.allocator, self.argv);
@@ -100,87 +203,7 @@ pub fn Container(comptime Stdin: type, comptime Stdout: type, comptime Stderr: t
                 }
             }
 
-            {
-                std.os.close(inpipe[0]);
-                std.os.close(outpipe[1]);
-                std.os.close(errpipe[1]);
-            }
-
-            const epollfd = try std.os.epoll_create1(0);
-            const epoll_event = std.os.linux.epoll_event;
-            try std.os.epoll_ctl(epollfd, EPOLL.CTL_ADD, inpipe[1], &epoll_event{
-                .events = EPOLL.OUT,
-                .data = .{
-                    .fd = inpipe[1],
-                },
-            });
-            try std.os.epoll_ctl(epollfd, EPOLL.CTL_ADD, outpipe[0], &epoll_event{
-                .events = EPOLL.IN,
-                .data = .{
-                    .fd = outpipe[0],
-                },
-            });
-            try std.os.epoll_ctl(epollfd, EPOLL.CTL_ADD, errpipe[0], &epoll_event{
-                .events = EPOLL.IN,
-                .data = .{
-                    .fd = errpipe[0],
-                },
-            });
-
-            var open_fds: u32 = 3;
-            while (open_fds > 0) {
-                var events: [3]std.os.linux.epoll_event = undefined;
-                std.log.debug("waiting for events", .{});
-                const nfds = std.os.epoll_wait(epollfd, &events, -1);
-                std.log.debug("got {} events", .{nfds});
-                for (events[0..nfds]) |event| {
-                    if (event.events & (EPOLL.IN | EPOLL.OUT) != 0) {
-                        if (event.events & EPOLL.IN != 0)
-                            std.log.debug("got pollin", .{});
-                        if (event.events & EPOLL.OUT != 0)
-                            std.log.debug("got pollout", .{});
-                        var buf: [1024]u8 = undefined;
-                        if (event.data.fd == inpipe[1]) {
-                            std.log.debug("reading for stdin", .{});
-                            const r = try self.stdin.read(&buf);
-                            if (r == 0) {
-                                std.log.debug("finished reading for stdin", .{});
-                                try std.os.epoll_ctl(epollfd, EPOLL.CTL_DEL, event.data.fd, null);
-                                std.os.close(event.data.fd);
-                                open_fds -= 1;
-                            } else {
-                                std.log.debug("writing {} bytes to stdin", .{r});
-                                const w = try std.os.write(event.data.fd, buf[0..r]);
-                                std.debug.assert(w == r);
-                            }
-                        } else if (event.data.fd == outpipe[0]) {
-                            std.log.debug("reading from stdout", .{});
-                            const r = try std.os.read(event.data.fd, &buf);
-                            std.log.debug("writing {} bytes for stdout", .{r});
-                            const w = try self.stdout.write(buf[0..r]);
-                            std.debug.assert(w == r);
-                        } else if (event.data.fd == errpipe[0]) {
-                            std.log.debug("reading from stderr", .{});
-                            const r = try std.os.read(event.data.fd, &buf);
-                            std.log.debug("writing {} bytes for stderr", .{r});
-                            const w = try self.stderr.write(buf[0..r]);
-                            std.debug.assert(w == r);
-                        } else {
-                            unreachable;
-                        }
-                    }
-                    if (event.events & (EPOLL.ERR | EPOLL.HUP) != 0) {
-                        if (event.events & EPOLL.ERR != 0)
-                            std.log.debug("got pollerr", .{});
-                        if (event.events & EPOLL.HUP != 0)
-                            std.log.debug("got pollhup", .{});
-                        try std.os.epoll_ctl(epollfd, EPOLL.CTL_DEL, event.data.fd, null);
-                        std.os.close(event.data.fd);
-                        open_fds -= 1;
-                    }
-                }
-            }
-            std.os.close(epollfd);
+            try self.streams.readPipes();
 
             const rc = try sys.wait4(child_pid, 0);
             std.debug.assert(rc.pid == child_pid);
