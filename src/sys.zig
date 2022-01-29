@@ -191,3 +191,37 @@ pub fn pivot_root(new_root: [*:0]const u8, put_old: [*:0]const u8) PivotRootErro
         else => |err| return unexpectedErrno(err),
     }
 }
+
+pub const TimerfdCreateError = error{
+    SystemResources,
+    PermissionDenied,
+} || UnexpectedError;
+
+pub fn timerfd_create(clockid: i32, flags: u32) TimerfdCreateError!fd_t {
+    const rc = linux.timerfd_create(clockid, flags);
+    switch (errno(rc)) {
+        .SUCCESS => return @intCast(fd_t, rc),
+        .INVAL => unreachable,
+        .MFILE => return error.SystemResources,
+        .NODEV => return error.SystemResources,
+        .NOMEM => return error.SystemResources,
+        .PERM => return error.PermissionDenied,
+        else => |err| return unexpectedErrno(err),
+    }
+}
+
+pub const TimerfdSetError = error{
+    Canceled,
+} || UnexpectedError;
+
+pub fn timerfd_settime(fd: fd_t, flags: u32, new_value: *const itimerspec, old_value: ?*itimerspec) TimerfdSetError!void {
+    const rc = linux.timerfd_settime(fd, flags, new_value, old_value);
+    switch (errno(rc)) {
+        .SUCCESS => return,
+        .BADF => unreachable,
+        .CANCELED => return error.Canceled,
+        .FAULT => unreachable,
+        .INVAL => unreachable,
+        else => |err| return unexpectedErrno(err),
+    }
+}
