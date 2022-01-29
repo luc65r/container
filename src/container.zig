@@ -35,6 +35,7 @@ pub fn IOStreams(comptime Stdin: type, comptime Stdout: type, comptime Stderr: t
             }
 
             const epollfd = try std.os.epoll_create1(0);
+            defer std.os.close(epollfd);
             const epoll_event = std.os.linux.epoll_event;
             for (self.pipes) |p, i| {
                 try std.os.epoll_ctl(epollfd, EPOLL.CTL_ADD, p.get(.parent), &epoll_event{
@@ -90,7 +91,6 @@ pub fn IOStreams(comptime Stdin: type, comptime Stdout: type, comptime Stderr: t
                     }
                 }
             }
-            std.os.close(epollfd);
         }
 
         const Pipe = struct {
