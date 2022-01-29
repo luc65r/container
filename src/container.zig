@@ -29,7 +29,7 @@ pub fn IOStreams(comptime Stdin: type, comptime Stdout: type, comptime Stderr: t
             }
         }
 
-        pub fn readPipes(self: *Self) !void {
+        pub fn readPipes(self: *Self, timeout: u32) !void {
             for (self.pipes) |*p| {
                 p.close(.child);
             }
@@ -46,12 +46,35 @@ pub fn IOStreams(comptime Stdin: type, comptime Stdout: type, comptime Stderr: t
                 });
             }
 
+            const timerfd = try sys.timerfd_create(std.os.linux.CLOCK.REALTIME, 0);
+            defer std.os.close(timerfd);
+            try sys.timerfd_settime(timerfd, 0, &std.os.linux.itimerspec{
+                .it_interval = .{
+                    .tv_sec = 0,
+                    .tv_nsec = 0,
+                },
+                .it_value = .{
+                    .tv_sec = timeout,
+                    .tv_nsec = 0,
+                },
+            }, null);
+            try std.os.epoll_ctl(epollfd, EPOLL.CTL_ADD, timerfd, &epoll_event{
+                .events = EPOLL.IN,
+                .data = .{
+                    .fd = timerfd,
+                },
+            });
+
             var open_fds: u32 = 3;
             while (open_fds > 0) {
                 var events: [3]std.os.linux.epoll_event = undefined;
                 const nfds = std.os.epoll_wait(epollfd, &events, -1);
                 std.log.debug("got {} events", .{nfds});
                 for (events[0..nfds]) |event| {
+                    if (event.data.fd == timerfd) {
+                        return error.Timeout;
+                    }
+
                     const p: *Pipe = brk: {
                         for (self.pipes) |*p| {
                             if (p.get(.parent) == event.data.fd)
@@ -152,6 +175,7 @@ pub fn Container(comptime IOStreamsType: type) type {
         },
         dir: std.fs.Dir,
         cwd: []const u8,
+        timeout: u32,
         streams: IOStreamsType,
 
         const Self = @This();
@@ -225,7 +249,13 @@ pub fn Container(comptime IOStreamsType: type) type {
                 }
             }
 
-            try self.streams.readPipes();
+            self.streams.readPipes(self.timeout) catch |err| switch (err) {
+                error.Timeout => {
+                    try std.os.kill(child_pid, std.os.linux.SIG.KILL);
+                    return error.Timeout;
+                },
+                else => return err,
+            };
 
             const rc = try sys.wait4(child_pid, 0);
             std.debug.assert(rc.pid == child_pid);

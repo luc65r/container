@@ -7,6 +7,7 @@ const pid_t = linux.pid_t;
 const fd_t = linux.fd_t;
 const off_t = linux.off_t;
 const rusage = linux.rusage;
+const itimerspec = linux.itimerspec;
 const UnexpectedError = os.UnexpectedError;
 const unexpectedErrno = os.unexpectedErrno;
 

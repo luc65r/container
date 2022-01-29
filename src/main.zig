@@ -32,7 +32,7 @@ pub fn main() !void {
     if (args.flag("--help"))
         return clap.help(stdout, &params);
 
-    var tmpdir = try TmpDir("container").create();
+    var tmpdir = try TmpDir("container.").create();
     defer tmpdir.cleanup();
 
     const in = std.io.fixedBufferStream("this is a test\n").reader();
@@ -58,6 +58,7 @@ pub fn main() !void {
         },
         .dir = tmpdir.dir,
         .cwd = "/",
+        .timeout = 2,
         .streams = streams,
     };
 
